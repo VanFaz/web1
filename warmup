@@ -1,0 +1,171 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <iomanip>
+#include <algorithm>
+
+static double vec_norm2(const std::vector<double>& v) {
+    long double s = 0.0L;
+    for (double x : v) s += (long double)x * (long double)x;
+    return std::sqrt((double)s);
+}
+
+static std::vector<double> mat_vec_mul(const std::vector<std::vector<double>>& A,
+                                       const std::vector<double>& x) {
+    const int n = (int)A.size();
+    std::vector<double> y(n, 0.0);
+    for (int i = 0; i < n; ++i) {
+        long double sum = 0.0L;
+        for (int j = 0; j < n; ++j) sum += (long double)A[i][j] * (long double)x[j];
+        y[i] = (double)sum;
+    }
+    return y;
+}
+
+static int sgn(double v, double eps = 0.0) {
+    if (v > eps) return 1;
+    if (v < -eps) return -1;
+    return 0;
+}
+
+int main() {
+    std::ifstream fin("input.txt");
+    std::ofstream fout("output.txt");
+
+    if (!fin) return 0;
+
+    int n;
+    fin >> n;
+
+    std::vector<std::vector<double>> A(n, std::vector<double>(n));
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+            fin >> A[i][j];
+
+    // Пробуем считать y^(0); если не хватает данных — возьмём (1,1,...,1)
+    std::vector<double> y0(n, 1.0);
+
+    std::streampos pos_after_A = fin.tellg();
+
+    bool has_y0 = true;
+    for (int i = 0; i < n; ++i) {
+        if (!(fin >> y0[i])) { has_y0 = false; break; }
+    }
+    if (!has_y0) {
+        fin.clear();
+        fin.seekg(pos_after_A);
+        y0.assign(n, 1.0);
+    }
+
+    // Параметры (могут отсутствовать)
+    double eps = 1e-10;
+    double delta = 1e-12;
+    int maxIter = 10000;
+
+    {
+        double teps, tdelta;
+        int tmax;
+        if (fin >> teps >> tdelta >> tmax) {
+            eps = teps;
+            delta = tdelta;
+            maxIter = tmax;
+        }
+    }
+
+    // Шаг 1: x^(0) = y^(0)/||y^(0)||
+    double n0 = vec_norm2(y0);
+    if (n0 == 0.0) {
+        fout << "ERROR: initial vector has zero norm\n";
+        return 0;
+    }
+    std::vector<double> x(n);
+    for (int i = 0; i < n; ++i) x[i] = y0[i] / n0;
+
+    std::vector<double> prev_lambda(n, 0.0);
+    std::vector<char> prev_used(n, 0);
+
+    double lambda_est = 0.0;
+    int it_used = 0;
+    bool converged = false;
+
+    for (int k = 1; k <= maxIter; ++k) {
+        // Шаг 2: y^(k) = A x^(k-1)
+        std::vector<double> y = mat_vec_mul(A, x);
+
+        // Шаг 3: x^(k) = y^(k)/||y^(k)||
+        double ny = vec_norm2(y);
+        if (ny == 0.0) {
+            fout << "ERROR: zero vector encountered (A*x = 0)\n";
+            return 0;
+        }
+        std::vector<double> x_new(n);
+        for (int i = 0; i < n; ++i) x_new[i] = y[i] / ny;
+
+        // Шаг 4: lambda_i^(k) = y_i^(k) / x_i^(k-1) для |x_i^(k-1)| > delta
+        std::vector<double> cur_lambda(n, 0.0);
+        std::vector<char> cur_used(n, 0);
+
+        int cnt = 0;
+        long double sum_lambda = 0.0L;
+
+        for (int i = 0; i < n; ++i) {
+            if (std::fabs(x[i]) > delta) {
+                cur_used[i] = 1;
+                cur_lambda[i] = y[i] / x[i];
+                sum_lambda += (long double)cur_lambda[i];
+                cnt++;
+            }
+        }
+
+        if (cnt > 0) lambda_est = (double)(sum_lambda / (long double)cnt);
+
+        // Шаг 5: тест на сходимость (стабилизация знаков и "цифр" -> близость по eps)
+        bool ok = true;
+        int common = 0;
+
+        if (k >= 2) {
+            for (int i = 0; i < n; ++i) {
+                if (cur_used[i] && prev_used[i]) {
+                    common++;
+
+                    if (sgn(cur_lambda[i]) != sgn(prev_lambda[i])) { ok = false; break; }
+
+                    double a = cur_lambda[i];
+                    double b = prev_lambda[i];
+                    double tol = eps * std::max(1.0, std::fabs(a));
+                    if (std::fabs(a - b) > tol) { ok = false; break; }
+                }
+            }
+            if (common < 2) ok = false;
+        } else {
+            ok = false;
+        }
+
+
+        if (ok) {
+            converged = true;
+            it_used = k;
+            x = x_new;
+            break;
+        }
+
+        prev_lambda = cur_lambda;
+        prev_used = cur_used;
+        x = x_new;
+        it_used = k;
+    }
+
+    fout.setf(std::ios::fixed);
+    fout << std::setprecision(15);
+
+    fout << "iterations " << it_used << "\n";
+    fout << "converged " << (converged ? 1 : 0) << "\n";
+    fout << "lambda " << lambda_est << "\n";
+    fout << "eigenvector\n";
+    for (int i = 0; i < n; ++i) {
+        fout << x[i] << (i + 1 == n ? "\n" : " ");
+    }
+
+    return 0;
+}
