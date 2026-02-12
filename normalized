@@ -1,0 +1,320 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <iomanip>
+#include <algorithm>
+#include <limits>
+
+static double vec_norm2(const std::vector<double>& v) {
+    long double s = 0.0L;
+    for (double x : v) s += (long double)x * (long double)x;
+    return std::sqrt((double)s);
+}
+
+static std::vector<double> mat_vec_mul(const std::vector<std::vector<double>>& A,
+                                       const std::vector<double>& x) {
+    const int n = (int)A.size();
+    std::vector<double> y(n, 0.0);
+    for (int i = 0; i < n; ++i) {
+        long double sum = 0.0L;
+        for (int j = 0; j < n; ++j) sum += (long double)A[i][j] * (long double)x[j];
+        y[i] = (double)sum;
+    }
+    return y;
+}
+
+static int sgn(double v, double eps = 0.0) {
+    if (v > eps) return 1;
+    if (v < -eps) return -1;
+    return 0;
+}
+
+// ---- integer helpers (safe enough for typical tasks) ----
+static long long ll_gcd(long long a, long long b) {
+    a = std::llabs(a); b = std::llabs(b);
+    while (b != 0) {
+        long long t = a % b;
+        a = b; b = t;
+    }
+    return a;
+}
+
+static long long ll_lcm(long long a, long long b) {
+    a = std::llabs(a); b = std::llabs(b);
+    if (a == 0 || b == 0) return 0;
+    long long g = ll_gcd(a, b);
+    // avoid overflow where possible
+    long long div = a / g;
+    if (div > (std::numeric_limits<long long>::max)() / b) {
+        return 0; // signal overflow
+    }
+    return div * b;
+}
+
+// Rational approximation via continued fractions: find p/q with q <= max_den
+// Returns true if approximation is within tol.
+static bool rational_approx(double x, long long max_den, double tol, long long& p_out, long long& q_out) {
+    if (!std::isfinite(x)) return false;
+
+    if (std::fabs(x) <= tol) { p_out = 0; q_out = 1; return true; }
+
+    double sign = (x < 0) ? -1.0 : 1.0;
+    double a = std::fabs(x);
+
+    // Continued fraction convergents
+    long long p0 = 0, q0 = 1;
+    long long p1 = 1, q1 = 0;
+
+    double r = a;
+    for (int iter = 0; iter < 100; ++iter) {
+        long long k = (long long)std::floor(r);
+        // next convergent
+        long long p2 = k * p1 + p0;
+        long long q2 = k * q1 + q0;
+
+        if (q2 > max_den) {
+            // clamp using best mediant-ish step
+            long long t = (max_den - q0) / q1;
+            if (t <= 0) break;
+            p2 = t * p1 + p0;
+            q2 = t * q1 + q0;
+            p0 = p1; q0 = q1;
+            p1 = p2; q1 = q2;
+            break;
+        }
+
+        p0 = p1; q0 = q1;
+        p1 = p2; q1 = q2;
+
+        double frac = r - (double)k;
+        if (frac < 1e-18) break;
+        r = 1.0 / frac;
+    }
+
+    long long p = p1;
+    long long q = q1;
+    if (q == 0) return false;
+
+    double approx = (double)p / (double)q;
+    if (std::fabs(approx - a) > tol * std::max(1.0, a)) return false;
+
+    p_out = (long long)std::llround(sign * (double)p);
+    q_out = q;
+    // normalize sign in numerator only
+    if (q_out < 0) { q_out = -q_out; p_out = -p_out; }
+    long long g = ll_gcd(p_out, q_out);
+    if (g > 1) { p_out /= g; q_out /= g; }
+    return true;
+}
+
+// Convert vector x to integer proportional vector.
+// Tries rational approx for each component; if fails, fallback to scaling by 1e6 and rounding.
+static std::vector<long long> to_integer_proportional(const std::vector<double>& x) {
+    const long long MAX_DEN = 100000;   // can increase if needed
+    const double TOL = 1e-10;
+
+    int n = (int)x.size();
+    std::vector<long long> num(n, 0), den(n, 1);
+    bool all_rational = true;
+
+    for (int i = 0; i < n; ++i) {
+        long long p, q;
+        if (!rational_approx(x[i], MAX_DEN, TOL, p, q)) {
+            all_rational = false;
+            break;
+        }
+        num[i] = p;
+        den[i] = q;
+    }
+
+    if (all_rational) {
+        // L = lcm of denominators
+        long long L = 1;
+        for (int i = 0; i < n; ++i) {
+            long long next = ll_lcm(L, den[i]);
+            if (next == 0) { all_rational = false; break; } // overflow
+            L = next;
+        }
+
+        if (all_rational && L != 0) {
+            std::vector<long long> iv(n, 0);
+            for (int i = 0; i < n; ++i) {
+                long long mult = L / den[i];
+                // check overflow
+                long double val = (long double)num[i] * (long double)mult;
+                if (std::fabsl(val) > (long double)(std::numeric_limits<long long>::max)()) {
+                    all_rational = false;
+                    break;
+                }
+                iv[i] = (long long)val;
+            }
+            if (all_rational) {
+                // reduce by gcd of all components
+                long long g = 0;
+                for (int i = 0; i < n; ++i) g = ll_gcd(g, iv[i]);
+                if (g > 1) for (int i = 0; i < n; ++i) iv[i] /= g;
+
+                // avoid (-0)
+                for (int i = 0; i < n; ++i) if (iv[i] == 0) iv[i] = 0;
+
+                return iv;
+            }
+        }
+    }
+
+    // Fallback: scale by 1e6/maxabs and round
+    double maxabs = 0.0;
+    for (double v : x) maxabs = std::max(maxabs, std::fabs(v));
+    if (maxabs == 0.0) return std::vector<long long>(n, 0);
+
+    double S = 1000000.0 / maxabs;
+    std::vector<long long> iv(n, 0);
+    for (int i = 0; i < n; ++i) iv[i] = (long long)std::llround(x[i] * S);
+
+    long long g = 0;
+    for (int i = 0; i < n; ++i) g = ll_gcd(g, iv[i]);
+    if (g > 1) for (int i = 0; i < n; ++i) iv[i] /= g;
+
+    return iv;
+}
+
+int main() {
+    std::ifstream fin("input.txt");
+    std::ofstream fout("output.txt");
+    if (!fin) return 0;
+
+    int n;
+    fin >> n;
+
+    std::vector<std::vector<double>> A(n, std::vector<double>(n));
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+            fin >> A[i][j];
+
+    // Try read y^(0)
+    std::vector<double> y0(n, 1.0);
+    std::streampos pos_after_A = fin.tellg();
+
+    bool has_y0 = true;
+    for (int i = 0; i < n; ++i) {
+        if (!(fin >> y0[i])) { has_y0 = false; break; }
+    }
+    if (!has_y0) {
+        fin.clear();
+        fin.seekg(pos_after_A);
+        y0.assign(n, 1.0);
+    }
+
+    // Params (optional)
+    double eps = 1e-10;
+    double delta = 1e-12;
+    int maxIter = 10000;
+
+    {
+        double teps, tdelta;
+        int tmax;
+        if (fin >> teps >> tdelta >> tmax) {
+            eps = teps;
+            delta = tdelta;
+            maxIter = tmax;
+        }
+    }
+
+    // Step 1: x^(0) = y^(0)/||y^(0)||
+    double n0 = vec_norm2(y0);
+    if (n0 == 0.0) {
+        fout << "ERROR: initial vector has zero norm\n";
+        return 0;
+    }
+    std::vector<double> x(n);
+    for (int i = 0; i < n; ++i) x[i] = y0[i] / n0;
+
+    std::vector<double> prev_lambda(n, 0.0);
+    std::vector<char> prev_used(n, 0);
+
+    double lambda_est = 0.0;
+    int it_used = 0;
+    bool converged = false;
+
+    for (int k = 1; k <= maxIter; ++k) {
+        // Step 2
+        std::vector<double> y = mat_vec_mul(A, x);
+
+        // Step 3
+        double ny = vec_norm2(y);
+        if (ny == 0.0) {
+            fout << "ERROR: zero vector encountered (A*x = 0)\n";
+            return 0;
+        }
+        std::vector<double> x_new(n);
+        for (int i = 0; i < n; ++i) x_new[i] = y[i] / ny;
+
+        // Step 4
+        std::vector<double> cur_lambda(n, 0.0);
+        std::vector<char> cur_used(n, 0);
+
+        int cnt = 0;
+        long double sum_lambda = 0.0L;
+
+        for (int i = 0; i < n; ++i) {
+            if (std::fabs(x[i]) > delta) {
+                cur_used[i] = 1;
+                cur_lambda[i] = y[i] / x[i];
+                sum_lambda += (long double)cur_lambda[i];
+                cnt++;
+            }
+        }
+        if (cnt > 0) lambda_est = (double)(sum_lambda / (long double)cnt);
+
+        // Step 5: convergence test
+        bool ok = true;
+        int common = 0;
+
+        if (k >= 2) {
+            for (int i = 0; i < n; ++i) {
+                if (cur_used[i] && prev_used[i]) {
+                    common++;
+
+                    if (sgn(cur_lambda[i]) != sgn(prev_lambda[i])) { ok = false; break; }
+
+                    double a = cur_lambda[i];
+                    double b = prev_lambda[i];
+                    double tol = eps * std::max(1.0, std::fabs(a));
+                    if (std::fabs(a - b) > tol) { ok = false; break; }
+                }
+            }
+            if (common < 2) ok = false;
+        } else {
+            ok = false;
+        }
+
+        if (ok) {
+            converged = true;
+            it_used = k;
+            x = x_new;
+            break;
+        }
+
+        prev_lambda = cur_lambda;
+        prev_used = cur_used;
+        x = x_new;
+        it_used = k;
+    }
+
+    // Convert eigenvector to integer proportional form
+    std::vector<long long> x_int = to_integer_proportional(x);
+
+    fout.setf(std::ios::fixed);
+    fout << std::setprecision(15);
+
+    fout << "iterations " << it_used << "\n";
+    fout << "converged " << (converged ? 1 : 0) << "\n";
+    fout << "lambda " << lambda_est << "\n";
+    fout << "eigenvector_int\n";
+    for (int i = 0; i < n; ++i) {
+        fout << x_int[i] << (i + 1 == n ? "\n" : " ");
+    }
+
+    return 0;
+}
