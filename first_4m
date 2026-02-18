@@ -1,0 +1,228 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <iomanip>
+#include <algorithm>
+
+using namespace std;
+
+static double vec_norm2(const vector<double>& v) {
+    long double s = 0.0L;
+    for (double x : v) s += (long double)x * (long double)x;
+    return sqrt((double)s);
+}
+
+static double dot(const vector<double>& a, const vector<double>& b) {
+    long double s = 0.0L;
+    for (int i = 0; i < (int)a.size(); ++i) s += (long double)a[i] * (long double)b[i];
+    return (double)s;
+}
+
+static vector<double> vec_sub(const vector<double>& a, const vector<double>& b) {
+    vector<double> r(a.size());
+    for (int i = 0; i < (int)a.size(); ++i) r[i] = a[i] - b[i];
+    return r;
+}
+static vector<double> vec_add(const vector<double>& a, const vector<double>& b) {
+    vector<double> r(a.size());
+    for (int i = 0; i < (int)a.size(); ++i) r[i] = a[i] + b[i];
+    return r;
+}
+
+
+static long long ll_gcd(long long a, long long b) {
+    a = llabs(a); b = llabs(b);
+    while (b != 0) { long long t = a % b; a = b; b = t; }
+    return a;
+}
+
+static vector<long long> to_integer_proportional(const vector<double>& x) {
+    int n = (int)x.size();
+    double maxabs = 0.0;
+    for (double v : x) maxabs = max(maxabs, fabs(v));
+    if (maxabs == 0.0) return vector<long long>(n, 0);
+
+    double S = 1000000.0 / maxabs;
+    vector<long long> iv(n);
+    for (int i = 0; i < n; ++i) iv[i] = (long long)llround(x[i] * S);
+
+    long long g = 0;
+    for (int i = 0; i < n; ++i) g = ll_gcd(g, iv[i]);
+    if (g > 1) for (int i = 0; i < n; ++i) iv[i] /= g;
+
+    return iv;
+}
+
+static bool lu_decompose(vector<vector<double>>& A, vector<int>& piv, double eps_pivot = 1e-15) { // LU с частичным выбором
+    int n = (int)A.size();
+    piv.resize(n);
+    for (int i = 0; i < n; ++i) piv[i] = i;
+
+    for (int k = 0; k < n; ++k) {
+        int p = k;
+        double best = fabs(A[k][k]);
+        for (int i = k + 1; i < n; ++i) {
+            double val = fabs(A[i][k]);
+            if (val > best) { best = val; p = i; }
+        }
+        if (best < eps_pivot) return false;
+
+        if (p != k) {
+            swap(A[p], A[k]);
+            swap(piv[p], piv[k]);
+        }
+
+        for (int i = k + 1; i < n; ++i) {
+            A[i][k] /= A[k][k];
+            double lik = A[i][k];
+            for (int j = k + 1; j < n; ++j)
+                A[i][j] -= lik * A[k][j];
+        }
+    }
+    return true;
+}
+
+static void lu_solve(const vector<vector<double>>& LU, const vector<int>& piv,
+    const vector<double>& b, vector<double>& x_out) {
+    int n = (int)LU.size();
+    x_out.assign(n, 0.0);
+
+    vector<double> y(n);
+    for (int i = 0; i < n; ++i) y[i] = b[piv[i]];
+
+    // Ly = Pb
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < i; ++j)
+            y[i] -= LU[i][j] * y[j];
+
+    // Ux = y
+    for (int i = n - 1; i >= 0; --i) {
+        double s = y[i];
+        for (int j = i + 1; j < n; ++j)
+            s -= LU[i][j] * x_out[j];
+        x_out[i] = s / LU[i][i];
+    }
+}
+
+int main() {
+    ifstream fin("input.txt");
+    ofstream fout("output.txt");
+    if (!fin) return 0;
+
+    int n;
+    fin >> n;
+
+    vector<vector<double>> A(n, vector<double>(n));
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+            fin >> A[i][j];
+
+    // y0 optional
+    vector<double> y0(n, 1.0);
+    streampos pos_after_A = fin.tellg();
+
+    bool has_y0 = true;
+    for (int i = 0; i < n; ++i)
+        if (!(fin >> y0[i])) { has_y0 = false; break; }
+
+    if (!has_y0) {
+        fin.clear();
+        fin.seekg(pos_after_A);
+        y0.assign(n, 1.0);
+    }
+
+    double eps = 1e-10;
+    double delta = 1e-12;
+    int maxIter = 10000;
+
+    {
+        double teps, tdelta;
+        int tmax;
+        if (fin >> teps >> tdelta >> tmax) {
+            eps = teps;
+            delta = tdelta;
+            maxIter = tmax;
+        }
+    }
+
+    // LU once
+    vector<vector<double>> LU = A;
+    vector<int> piv;
+    if (!lu_decompose(LU, piv)) {
+        fout << "ERROR: matrix is singular\n";
+        return 0;
+    }
+
+    // x0 = y0 / ||y0||
+    double n0 = vec_norm2(y0);
+    if (n0 == 0.0) {
+        fout << "ERROR: zero initial vector\n";
+        return 0;
+    }
+    vector<double> x(n);
+    for (int i = 0; i < n; ++i) x[i] = y0[i] / n0;
+
+    double gamma_est = 0.0;   // ~ 1/lambda_n
+    double lambda_est = 0.0;  // ~ lambda_n
+
+    int it_used = 0;
+    bool converged = false;
+
+    for (int k = 1; k <= maxIter; ++k) {
+        // A y = x  => y = A^{-1} x
+        vector<double> y;
+        lu_solve(LU, piv, x, y);
+
+        double ny = vec_norm2(y);
+        if (ny == 0.0) {
+            fout << "ERROR: zero vector during iterations\n";
+            return 0;
+        }
+
+        vector<double> x_new(n);
+        for (int i = 0; i < n; ++i) x_new[i] = y[i] / ny;
+
+        // gamma via scalar product: gamma = (x^T y) / (x^T x)
+        double xx = dot(x, x);
+        if (fabs(xx) < 1e-300) {
+            fout << "ERROR: x became too small\n";
+            return 0;
+        }
+        gamma_est = dot(x, y) / xx;
+        if (fabs(gamma_est) > 1e-300) lambda_est = 1.0 / gamma_est;
+
+        // convergence by vector change, sign-invariant
+        double d1 = vec_norm2(vec_sub(x_new, x));
+        double d2 = vec_norm2(vec_add(x_new, x)); // если вектор сменил знак
+        double d = min(d1, d2);
+
+        if (d < eps) {
+            converged = true;
+            it_used = k;
+            x = x_new;
+            break;
+        }
+
+        x = x_new;
+        it_used = k;
+    }
+
+    vector<long long> x_int = to_integer_proportional(x);
+
+    fout.setf(ios::fixed);
+    fout << setprecision(15);
+
+    fout << "iterations " << it_used << "\n";
+    fout << "converged " << (converged ? 1 : 0) << "\n";
+    fout << "lambda_n " << lambda_est << "\n";
+    fout << "eigenvector\n";
+    for (int i = 0; i < n; ++i)
+        fout << x[i] << (i + 1 == n ? "\n" : " ");
+
+    fout << "eigenvector_int\n";
+    for (int i = 0; i < n; ++i)
+        fout << x_int[i] << (i + 1 == n ? "\n" : " ");
+
+    return 0;
+}
